@@ -1,5 +1,5 @@
-default_input_file='./videos/45-seconds.mp4'
-default_warmup_frames=20
+default_input_file='./videos/sample2.mp4'
+default_warmup_frames=5
 
 warmup_frames=$default_warmup_frames
 input_file=$default_input_file
