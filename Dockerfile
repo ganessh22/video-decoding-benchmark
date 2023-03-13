@@ -70,3 +70,5 @@ RUN bash -c 'mkdir -p benchmark-results/{plot,csv}/{fpt,cpu,mem,gpu,gpu_mem}' &&
   -DPYTHON_LIBRARY:FILEPATH="/usr/lib/python3.8/config-3.8-x86_64-linux-gnu/libpython3.8.so" \
   --trace-source=CMakeLists.txt --trace-expand && \
   make && make install
+
+RUN python3 -m pip install PytorchNvCodec
