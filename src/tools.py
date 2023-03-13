@@ -206,9 +206,9 @@ class NVDec(_Tool):
         self.gpu_id = 0
         self.nv_dec = nvc.PyNvDecoder(file_to_decode, self.gpu_id)
         if self.to_tensor:
-            self.to_yuv = nvc.PySurfaceConverter(self.nv_dec.Width(), self.nv_dec.Height(), self.nv_dec.NV12, self.nv_dec.YUV420, self.gpu_id)
-            self.to_rgb = nvc.PySurfaceConverter(self.nv_dec.Width(), self.nv_dec.Height(), self.nv_dec.YUV420, self.nv_dec.RGB, self.gpu_id)
-            self.to_pln = nvc.PySurfaceConverter(self.nv_dec.Width(), self.nv_dec.Height(), self.nv_dec.RGB, self.nv_dec.RGB_PLANAR, self.gpu_id)
+            self.to_yuv = nvc.PySurfaceConverter(self.nv_dec.Width(), self.nv_dec.Height(), nvc.NV12, nvc.YUV420, self.gpu_id)
+            self.to_rgb = nvc.PySurfaceConverter(self.nv_dec.Width(), self.nv_dec.Height(), nvc.YUV420, nvc.RGB, self.gpu_id)
+            self.to_pln = nvc.PySurfaceConverter(self.nv_dec.Width(), self.nv_dec.Height(), nvc.RGB, nvc.RGB_PLANAR, self.gpu_id)
             self.cc_ctx = nvc.ColorspaceConversionContext(nvc.BT_601, nvc.MPEG)
         else:
             # Numpy array to store decoded frames pixels
