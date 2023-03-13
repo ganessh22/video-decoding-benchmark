@@ -1,21 +1,26 @@
-from abc import abstractmethod
 import csv
-from enum import Enum
 import re
-from statistics import stdev
 import time
+from abc import abstractmethod
+from enum import Enum
+from statistics import stdev
+
+import av
 import cv2
 import gpustat
-from numpy import percentile
-import psutil
-from utils import IterationResult, avg, b_to_mb, plot_list_to_image, s_to_ms
-import av
 import numpy as np
+import psutil
+import torch
+from numpy import percentile
+from torchvision.transforms.functional import pil_to_tensor
+from utils import IterationResult, avg, b_to_mb, plot_list_to_image, s_to_ms
+
 import PyNvCodec as nvc
+import PytorchNvCodec as pnvc
 
 
 class _Tool:
-    def __init__(self, file_to_decode: str, with_plot=False, process_name="python3") -> None:
+    def __init__(self, file_to_decode: str, with_plot=False, process_name="python3", to_tensor: bool = False) -> None:
         self.file_to_decode = file_to_decode
         self.with_plot = with_plot
         self.records: IterationResult = {
@@ -34,6 +39,11 @@ class _Tool:
             self.process_pid = p.pid
 
         self._psutil_handle = psutil.Process(self.process_pid)
+        self.to_tensor = to_tensor
+
+    @abstractmethod
+    def convert_tensor(self, output) -> torch.Tensor:
+        """Convert to tensor"""
 
     def plot_all_metrics_to_png(self, file_name: str):
         for key, value in self.records.items():
@@ -80,6 +90,9 @@ class PyAV(_Tool):
     def __init__(self, file_to_decode: str, with_plot=False, process_name="python3") -> None:
         super().__init__(file_to_decode, with_plot, process_name)
 
+    def convert_tensor(self, output) -> torch.Tensor:
+        return pil_to_tensor(output).to("cuda:0")        
+
     def decode(self, warmup_iteration=0):
         av_input = av.open(self.file_to_decode)
         iteration_count = 1
@@ -89,7 +102,9 @@ class PyAV(_Tool):
 
             gpu = gpustat.core.GPUStatCollection.new_query()
             start_counter = time.perf_counter()
-            packet.decode()
+            (frame,) = packet.decode()
+            if self.to_tensor:
+                _ = self.convert_tensor(frame)
             end_counter = time.perf_counter()
             gpu_processes = list(filter(lambda x: self.process_name.match(
                 x['command']), gpu[0].processes))
@@ -124,6 +139,9 @@ class OpenCV(_Tool):
     def __init__(self, file_to_decode: str, with_plot=False, process_name="python3") -> None:
         super().__init__(file_to_decode, with_plot, process_name)
 
+    def convert_tensor(self, output) -> torch.Tensor:
+        return torch.from_numpy(output).to("cuda:0")
+
     def decode(self, warmup_iteration=0):
         video = cv2.VideoCapture(self.file_to_decode)
         iteration_count = 1
@@ -133,9 +151,11 @@ class OpenCV(_Tool):
                 x['command']), gpu[0].processes))
 
             start_counter = time.perf_counter()
-            ret, _ = video.read()
+            ret, frame = video.read()
             if not ret:
                 break
+            if self.to_tensor:
+                _ = self.convert_tensor(frame)
             end_counter = time.perf_counter()
 
             processing_time = round(s_to_ms(end_counter - start_counter), 2)
@@ -180,12 +200,60 @@ class DecodeStatus(Enum):
 class NVDec(_Tool):
     def __init__(self, file_to_decode: str, with_plot=False, process_name="python3") -> None:
         super().__init__(file_to_decode, with_plot, process_name)
-        self.nv_dec = nvc.PyNvDecoder(file_to_decode, 0)
         self.gpu_id = 0
+        self.nv_dec = nvc.PyNvDecoder(file_to_decode, self.gpu_id)
+        if self.to_tensor:
+            self.to_yuv = nvc.PySurfaceConverter(self.nv_dec.Width(), self.nv_dec.Height(), self.nv_dec.PixelFormat.NV12, self.nv_dec.PixelFormat.YUV420, self.gpu_id)
+            self.to_rgb = nvc.PySurfaceConverter(self.nv_dec.Width(), self.nv_dec.Height(), self.nv_dec.PixelFormat.YUV420, self.nv_dec.PixelFormat.RGB, self.gpu_id)
+            self.to_pln = nvc.PySurfaceConverter(self.nv_dec.Width(), self.nv_dec.Height(), self.nv_dec.PixelFormat.RGB, self.nv_dec.PixelFormat.RGB_PLANAR, self.gpu_id)
+            self.cc_ctx = nvc.ColorspaceConversionContext(nvc.ColorSpace.BT_601, nvc.ColorRange.MPEG)
         # Numpy array to store decoded frames pixels
         self.frame_nv12 = np.ndarray(shape=(0), dtype=np.uint8)
         # Encoded packet data
         self.packet_data = nvc.PacketData()
+
+    def convert_tensor(self, output) -> torch.Tensor:
+        # output should be rgb24_planar
+        surf_plane = output.PlanePtr()
+        img_tensor = pnvc.makefromDevicePtrUint8(surf_plane.GpuMem(),
+                                                 surf_plane.Width(),
+                                                 surf_plane.Height(),
+                                                 surf_plane.Pitch(),
+                                                 surf_plane.ElemSize())
+        return img_tensor        
+
+    def decode_frame_tensor(self) -> DecodeStatus:
+        status = DecodeStatus.DEC_ERR
+        try:
+            nv12_surface = self.nv_dec.DecodeSingleSurface()
+            if nv12_surface.Empty():
+                print('Can not decode frame')
+                return status
+
+            # Convert from NV12 to YUV420.
+            # This extra step is required because not all NV12 -> RGB conversions
+            # implemented in NPP support all color spaces and ranges.
+            yuv420 = self.to_yuv.Execute(nv12_surface, self.cc_ctx)
+            if yuv420.Empty():
+                print('Can not convert nv12 -> yuv420')
+                return status
+
+            # Convert from YUV420 to interleaved RGB.
+            rgb24_small = self.to_rgb.Execute(yuv420, self.cc_ctx)
+            if rgb24_small.Empty():
+                print('Can not convert yuv420 -> rgb')
+                return status
+
+            # Convert to planar RGB.
+            rgb24_planar = self.to_pln.Execute(rgb24_small, self.cc_ctx)
+            if rgb24_planar.Empty():
+                print('Can not convert rgb -> rgb planar')
+                return status
+            _ = self.convert_tensor(rgb24_planar)
+            status = DecodeStatus.DEC_READY
+        except Exception as e:
+            print(getattr(e, 'message', str(e)))
+        return status
 
     # Decode single video frame
     def decode_frame(self) -> DecodeStatus:
@@ -216,7 +284,10 @@ class NVDec(_Tool):
         while True:
 
             start_counter = time.perf_counter()
-            status = self.decode_frame()
+            if not self.to_tensor:
+                status = self.decode_frame()
+            else:
+                status - self.decord_frame_tensor()
             if status == DecodeStatus.DEC_ERR:
                 break
             end_counter = time.perf_counter()
