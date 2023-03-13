@@ -71,4 +71,4 @@ RUN bash -c 'mkdir -p benchmark-results/{plot,csv}/{fpt,cpu,mem,gpu,gpu_mem}' &&
   --trace-source=CMakeLists.txt --trace-expand && \
   make && make install
 
-RUN python3 -m pip install PytorchNvCodec
+RUN python3 -m pip install ./PytorchNvCodec/

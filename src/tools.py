@@ -102,9 +102,12 @@ class PyAV(_Tool):
 
             gpu = gpustat.core.GPUStatCollection.new_query()
             start_counter = time.perf_counter()
-            (frame,) = packet.decode()
+            ret = packet.decode()
             if self.to_tensor:
-                _ = self.convert_tensor(frame)
+                if len(ret) > 0:
+                    _ = self.convert_tensor(ret[0])
+                else:
+                    break
             end_counter = time.perf_counter()
             gpu_processes = list(filter(lambda x: self.process_name.match(
                 x['command']), gpu[0].processes))
@@ -203,14 +206,15 @@ class NVDec(_Tool):
         self.gpu_id = 0
         self.nv_dec = nvc.PyNvDecoder(file_to_decode, self.gpu_id)
         if self.to_tensor:
-            self.to_yuv = nvc.PySurfaceConverter(self.nv_dec.Width(), self.nv_dec.Height(), self.nv_dec.PixelFormat.NV12, self.nv_dec.PixelFormat.YUV420, self.gpu_id)
-            self.to_rgb = nvc.PySurfaceConverter(self.nv_dec.Width(), self.nv_dec.Height(), self.nv_dec.PixelFormat.YUV420, self.nv_dec.PixelFormat.RGB, self.gpu_id)
-            self.to_pln = nvc.PySurfaceConverter(self.nv_dec.Width(), self.nv_dec.Height(), self.nv_dec.PixelFormat.RGB, self.nv_dec.PixelFormat.RGB_PLANAR, self.gpu_id)
-            self.cc_ctx = nvc.ColorspaceConversionContext(nvc.ColorSpace.BT_601, nvc.ColorRange.MPEG)
-        # Numpy array to store decoded frames pixels
-        self.frame_nv12 = np.ndarray(shape=(0), dtype=np.uint8)
-        # Encoded packet data
-        self.packet_data = nvc.PacketData()
+            self.to_yuv = nvc.PySurfaceConverter(self.nv_dec.Width(), self.nv_dec.Height(), self.nv_dec.NV12, self.nv_dec.YUV420, self.gpu_id)
+            self.to_rgb = nvc.PySurfaceConverter(self.nv_dec.Width(), self.nv_dec.Height(), self.nv_dec.YUV420, self.nv_dec.RGB, self.gpu_id)
+            self.to_pln = nvc.PySurfaceConverter(self.nv_dec.Width(), self.nv_dec.Height(), self.nv_dec.RGB, self.nv_dec.RGB_PLANAR, self.gpu_id)
+            self.cc_ctx = nvc.ColorspaceConversionContext(nvc.BT_601, nvc.MPEG)
+        else:
+            # Numpy array to store decoded frames pixels
+            self.frame_nv12 = np.ndarray(shape=(0), dtype=np.uint8)
+            # Encoded packet data
+            self.packet_data = nvc.PacketData()
 
     def convert_tensor(self, output) -> torch.Tensor:
         # output should be rgb24_planar
